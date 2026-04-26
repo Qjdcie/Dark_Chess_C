@@ -13,7 +13,7 @@
 
 CC       = gcc
 CFLAGS   = -O3 -Wall -Wextra
-LDFLAGS  = -lm
+LDFLAGS  = -lm -lws2_32
 BUILDDIR = build
 
 # Verbose mode: V=1 shows full commands, otherwise quiet
