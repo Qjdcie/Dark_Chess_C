@@ -42,11 +42,11 @@ WIN_LDFLAGS = -lm -static-libgcc
 RAYLIB_MINGW_DIR ?= $(HOME)/raylib-mingw64
 WIN_RAYLIB_CFLAGS = -I$(RAYLIB_MINGW_DIR)/include
 WIN_RAYLIB_LIBS   = -L$(RAYLIB_MINGW_DIR)/lib -lraylib \
-                    -mwindows -lopengl32 -lgdi32 -lwinmm -static-libgcc
+                    -mwindows -lopengl32 -lgdi32 -lwinmm -lws2_32 -static-libgcc
 
 # ---- Source file groups ----
 
-CORE_SRC = src/core/board.c src/core/strategy.c
+CORE_SRC = src/core/board.c src/core/strategy.c src/core/net_client.c
 GUI_SRC  = src/gui/raylib_gui.c
 
 # ---- Targets ----

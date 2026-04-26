@@ -1,13 +1,15 @@
 /*
  * raylib_gui.c — Raylib Graphical Board for Chinese Dark Chess (暗棋)
  *
- * Simplified version: Player (RED) vs Random Computer (BLACK)
- * Computer randomly selects a legal move each turn.
+ * Modes:
+ *   - Player First / Computer First: local game vs AI
+ *   - Online Battle: connect to battle server, play against remote opponent
  *
  * Features:
  *   - 4x8 board with wooden-style colours
  *   - Click to flip / select+click to move/capture
- *   - Computer auto-plays as BLACK (random moves)
+ *   - Computer auto-plays via strategy module (offline mode)
+ *   - Online mode connects to battle server for board state
  *   - CJK piece characters via embedded monospace font
  */
 
@@ -19,6 +21,7 @@
 
 #include "board.h"
 #include "strategy.h"
+#include "net_client.h"
 #include "raylib_gui.h"
 #include "embedded_font.h"
 
@@ -45,14 +48,28 @@
 #define BTN_H     60
 #define BTN_GAP   30
 
+/* Room input */
+#define ROOM_ID_MAX  15
+#define INPUT_BOX_W  240
+#define INPUT_BOX_H  40
+
 /* =====================================================================
  *  Types
  * ===================================================================== */
 
 typedef enum {
-    SCREEN_CHOOSE  = 0,   /* 選擇先手畫面 */
-    SCREEN_PLAYING = 1    /* 遊戲進行中 */
+    SCREEN_CHOOSE        = 0,   /* 選擇模式畫面 */
+    SCREEN_PLAYING       = 1,   /* 遊戲進行中 */
+    SCREEN_ONLINE_CHOOSE = 2,   /* 線上對戰：選擇電腦/玩家 */
+    SCREEN_ONLINE_ROOM   = 3    /* 輸入房號畫面 */
 } ScreenState;
+
+/* Connection state for online room screen */
+typedef enum {
+    CONN_IDLE       = 0,
+    CONN_CONNECTING = 1,
+    CONN_FAILED     = 2
+} ConnState;
 
 /* =====================================================================
  *  Colours
@@ -85,6 +102,12 @@ static const Color COL_BTN_HOVER   = { 220, 180, 120, 255 };
 static const Color COL_BTN_BORDER  = {  80,  60,  30, 255 };
 static const Color COL_BTN_TEXT    = {  40,  30,  15, 255 };
 static const Color COL_TITLE_TEXT  = { 240, 220, 180, 255 };
+
+/* Input field */
+static const Color COL_INPUT_BG    = { 245, 235, 210, 255 };
+static const Color COL_INPUT_BORDER= {  80,  60,  30, 255 };
+static const Color COL_INPUT_TEXT  = {  40,  30,  15, 255 };
+static const Color COL_ERROR_TEXT  = { 220,  60,  60, 255 };
 
 /* =====================================================================
  *  Font
@@ -423,30 +446,34 @@ static void draw_board(const GameState *gs,
 
 /*
  * 函數名稱：draw_choose_screen
- * 功能：繪製選擇先手畫面，顯示「玩家先手」與「電腦先手」兩個按鈕
+ * 功能：繪製選擇模式畫面，顯示三個按鈕
  * 輸入：mouse_x/mouse_y - 滑鼠座標
  * 輸出：無（void），直接繪製至 Raylib 畫面
- * 最後更新：2026-04-02 23:00 (UTC+8)
  */
 static void draw_choose_screen(int mouse_x, int mouse_y)
 {
     ClearBackground(COL_BG);
 
     /* 標題 */
-    int title_y = WIN_H / 2 - BTN_H - BTN_GAP - 40;
-    render_text_centered("Dark Chess", WIN_W / 2, title_y - 30,
+    int total_btn_height = 3 * BTN_H + 2 * BTN_GAP;
+    int start_y = WIN_H / 2 - total_btn_height / 2;
+    int title_y = start_y - 50;
+    render_text_centered("Dark Chess", WIN_W / 2, title_y,
                          FONT_SIZE_LARGE, COL_TITLE_TEXT);
 
-    /* 兩個按鈕的位置 */
-    int btn_x = WIN_W / 2 - BTN_W / 2;
-    int btn1_y = WIN_H / 2 - BTN_H - BTN_GAP / 2;
-    int btn2_y = WIN_H / 2 + BTN_GAP / 2;
+    /* 三個按鈕的位置 */
+    int btn_x  = WIN_W / 2 - BTN_W / 2;
+    int btn1_y = start_y;
+    int btn2_y = start_y + BTN_H + BTN_GAP;
+    int btn3_y = start_y + 2 * (BTN_H + BTN_GAP);
 
     Rectangle btn1 = { (float)btn_x, (float)btn1_y, (float)BTN_W, (float)BTN_H };
     Rectangle btn2 = { (float)btn_x, (float)btn2_y, (float)BTN_W, (float)BTN_H };
+    Rectangle btn3 = { (float)btn_x, (float)btn3_y, (float)BTN_W, (float)BTN_H };
 
     int hover1 = CheckCollisionPointRec((Vector2){ (float)mouse_x, (float)mouse_y }, btn1);
     int hover2 = CheckCollisionPointRec((Vector2){ (float)mouse_x, (float)mouse_y }, btn2);
+    int hover3 = CheckCollisionPointRec((Vector2){ (float)mouse_x, (float)mouse_y }, btn3);
 
     /* 按鈕 1：玩家先手 */
     DrawRectangleRec(btn1, hover1 ? COL_BTN_HOVER : COL_BTN_NORMAL);
@@ -461,6 +488,148 @@ static void draw_choose_screen(int mouse_x, int mouse_y)
     render_text_centered("Computer First",
                          btn_x + BTN_W / 2, btn2_y + BTN_H / 2,
                          FONT_SIZE_SMALL + 4, COL_BTN_TEXT);
+
+    /* 按鈕 3：線上對戰 */
+    DrawRectangleRec(btn3, hover3 ? COL_BTN_HOVER : COL_BTN_NORMAL);
+    DrawRectangleLinesEx(btn3, 2, COL_BTN_BORDER);
+    render_text_centered("Online Battle",
+                         btn_x + BTN_W / 2, btn3_y + BTN_H / 2,
+                         FONT_SIZE_SMALL + 4, COL_BTN_TEXT);
+}
+
+/*
+ * 函數名稱：draw_online_choose_screen
+ * 功能：繪製線上對戰模式選擇畫面（電腦遊玩 / 玩家遊玩）
+ * 輸入：mouse_x/mouse_y - 滑鼠座標
+ * 輸出：無（void），直接繪製至 Raylib 畫面
+ */
+static void draw_online_choose_screen(int mouse_x, int mouse_y)
+{
+    ClearBackground(COL_BG);
+
+    /* Title */
+    int total_btn_height = 2 * BTN_H + BTN_GAP;
+    int start_y = WIN_H / 2 - total_btn_height / 2;
+    int title_y = start_y - 50;
+    render_text_centered("Online Battle", WIN_W / 2, title_y,
+                         FONT_SIZE_LARGE, COL_TITLE_TEXT);
+
+    /* Two buttons */
+    int btn_x  = WIN_W / 2 - BTN_W / 2;
+    int btn1_y = start_y;
+    int btn2_y = start_y + BTN_H + BTN_GAP;
+
+    Rectangle btn1 = { (float)btn_x, (float)btn1_y, (float)BTN_W, (float)BTN_H };
+    Rectangle btn2 = { (float)btn_x, (float)btn2_y, (float)BTN_W, (float)BTN_H };
+
+    int hover1 = CheckCollisionPointRec((Vector2){ (float)mouse_x, (float)mouse_y }, btn1);
+    int hover2 = CheckCollisionPointRec((Vector2){ (float)mouse_x, (float)mouse_y }, btn2);
+
+    /* Button 1: Computer Play */
+    DrawRectangleRec(btn1, hover1 ? COL_BTN_HOVER : COL_BTN_NORMAL);
+    DrawRectangleLinesEx(btn1, 2, COL_BTN_BORDER);
+    render_text_centered("Computer Play",
+                         btn_x + BTN_W / 2, btn1_y + BTN_H / 2,
+                         FONT_SIZE_SMALL + 4, COL_BTN_TEXT);
+
+    /* Button 2: Player Play */
+    DrawRectangleRec(btn2, hover2 ? COL_BTN_HOVER : COL_BTN_NORMAL);
+    DrawRectangleLinesEx(btn2, 2, COL_BTN_BORDER);
+    render_text_centered("Player Play",
+                         btn_x + BTN_W / 2, btn2_y + BTN_H / 2,
+                         FONT_SIZE_SMALL + 4, COL_BTN_TEXT);
+
+    /* Back hint */
+    render_text_centered("Press R to go back",
+                         WIN_W / 2, btn2_y + BTN_H + 30,
+                         FONT_SIZE_SMALL, COL_STATUS_TEXT);
+}
+
+/*
+ * 函數名稱：draw_online_room_screen
+ * 功能：繪製線上對戰房號輸入畫面
+ * 輸入：mouse_x/mouse_y - 滑鼠座標, room_input - 房號字串,
+ *       conn_state - 連線狀態, error_msg - 錯誤訊息
+ * 輸出：無（void），直接繪製至 Raylib 畫面
+ */
+static void draw_online_room_screen(int mouse_x, int mouse_y,
+                                    const char *room_input,
+                                    ConnState conn_state,
+                                    const char *error_msg)
+{
+    ClearBackground(COL_BG);
+
+    /* Title */
+    int center_y = WIN_H / 2 - 60;
+    render_text_centered("Online Battle", WIN_W / 2, center_y - 60,
+                         FONT_SIZE_LARGE, COL_TITLE_TEXT);
+
+    /* Room ID label */
+    render_text_centered("Room ID:", WIN_W / 2, center_y,
+                         FONT_SIZE_SMALL + 2, COL_TITLE_TEXT);
+
+    /* Input box */
+    int input_x = WIN_W / 2 - INPUT_BOX_W / 2;
+    int input_y = center_y + 20;
+    Rectangle input_rect = { (float)input_x, (float)input_y,
+                              (float)INPUT_BOX_W, (float)INPUT_BOX_H };
+    DrawRectangleRec(input_rect, COL_INPUT_BG);
+    DrawRectangleLinesEx(input_rect, 2, COL_INPUT_BORDER);
+
+    /* Input text + blinking cursor */
+    char display_text[ROOM_ID_MAX + 2];
+    snprintf(display_text, sizeof(display_text), "%s", room_input);
+    if ((int)(GetTime() * 2) % 2 == 0) {
+        int len = (int)strlen(display_text);
+        if (len < ROOM_ID_MAX) {
+            display_text[len] = '_';
+            display_text[len + 1] = '\0';
+        }
+    }
+    render_text_centered(display_text,
+                         WIN_W / 2, input_y + INPUT_BOX_H / 2,
+                         FONT_SIZE_SMALL + 2, COL_INPUT_TEXT);
+
+    /* Buttons: Back and Confirm */
+    int btn_w = 120;
+    int btn_h = 45;
+    int btn_gap = 40;
+    int btn_y = input_y + INPUT_BOX_H + 30;
+    int back_x  = WIN_W / 2 - btn_gap / 2 - btn_w;
+    int conf_x  = WIN_W / 2 + btn_gap / 2;
+
+    Rectangle btn_back = { (float)back_x, (float)btn_y,
+                            (float)btn_w, (float)btn_h };
+    Rectangle btn_conf = { (float)conf_x, (float)btn_y,
+                            (float)btn_w, (float)btn_h };
+
+    int hover_back = CheckCollisionPointRec(
+        (Vector2){ (float)mouse_x, (float)mouse_y }, btn_back);
+    int hover_conf = CheckCollisionPointRec(
+        (Vector2){ (float)mouse_x, (float)mouse_y }, btn_conf);
+
+    DrawRectangleRec(btn_back, hover_back ? COL_BTN_HOVER : COL_BTN_NORMAL);
+    DrawRectangleLinesEx(btn_back, 2, COL_BTN_BORDER);
+    render_text_centered("Back",
+                         back_x + btn_w / 2, btn_y + btn_h / 2,
+                         FONT_SIZE_SMALL + 2, COL_BTN_TEXT);
+
+    DrawRectangleRec(btn_conf, hover_conf ? COL_BTN_HOVER : COL_BTN_NORMAL);
+    DrawRectangleLinesEx(btn_conf, 2, COL_BTN_BORDER);
+    render_text_centered("Confirm",
+                         conf_x + btn_w / 2, btn_y + btn_h / 2,
+                         FONT_SIZE_SMALL + 2, COL_BTN_TEXT);
+
+    /* Status / error message */
+    if (conn_state == CONN_CONNECTING) {
+        render_text_centered("Connecting...",
+                             WIN_W / 2, btn_y + btn_h + 30,
+                             FONT_SIZE_SMALL, COL_TITLE_TEXT);
+    } else if (conn_state == CONN_FAILED && error_msg[0]) {
+        render_text_centered(error_msg,
+                             WIN_W / 2, btn_y + btn_h + 30,
+                             FONT_SIZE_SMALL, COL_ERROR_TEXT);
+    }
 }
 
 /* =====================================================================
@@ -470,11 +639,12 @@ static void draw_choose_screen(int mouse_x, int mouse_y)
 /*
  * 函數名稱：gui_main
  * 功能：遊戲主迴圈，含選擇先手畫面、首翻決定顏色、玩家輸入處理、AI 回合、畫面繪製
- * 輸入：無（void）
+ * 輸入：auto_online - 非零表示自動啟動線上對戰（電腦模式）
+ *       auto_room_id - 自動加入的房號（NULL 表示不自動加入）
  * 輸出：int - 正常結束回傳 0，字型載入失敗回傳 1
- * 最後更新：2026-04-06 15:00 (UTC+8)
+ * 最後更新：2026-04-26 (UTC+8)
  */
-int gui_main(void)
+int gui_main(int auto_online, const char *auto_room_id)
 {
     InitWindow(WIN_W, WIN_H, "Dark Chess");
     SetTargetFPS(60);
@@ -497,6 +667,30 @@ int gui_main(void)
     int last_to_r = 0, last_to_c = 0;
     int ai_delay = 0;               /* frames to wait before AI moves */
 
+    /* --- Online mode state --- */
+    int online_mode = 0;
+    int online_ai_mode = 0;         /* 1 = 電腦自動遊玩, 0 = 玩家操控 */
+    char room_input[ROOM_ID_MAX + 1] = "";
+    ConnState conn_state = CONN_IDLE;
+    int conn_frame = 0;             /* frame counter for connecting */
+    char conn_error[64] = "";
+    char my_role_ab[4] = "";        /* "A" or "B" */
+    int  waiting_for_update = 0;    /* 1 = sent action, waiting for server response */
+    Cell prev_cells[BOARD_ROWS][BOARD_COLS]; /* previous board for diff */
+    NetUpdateInfo net_info;
+    memset(&net_info, 0, sizeof(net_info));
+    memset(prev_cells, 0, sizeof(prev_cells));
+
+    /* CLI auto-start: -online_battle <room_id> → 電腦模式直接連線 */
+    if (auto_online && auto_room_id) {
+        online_ai_mode = 1;
+        strncpy(room_input, auto_room_id, ROOM_ID_MAX);
+        room_input[ROOM_ID_MAX] = '\0';
+        conn_state = CONN_CONNECTING;
+        conn_frame = 0;
+        screen = SCREEN_ONLINE_ROOM;
+    }
+
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_Q)) break;
 
@@ -504,28 +698,30 @@ int gui_main(void)
         int mx = (int)mouse.x, my = (int)mouse.y;
 
         /* ============================================================
-         *  畫面：選擇誰先手
+         *  畫面：選擇模式
          * ============================================================ */
         if (screen == SCREEN_CHOOSE) {
-            int btn_x = WIN_W / 2 - BTN_W / 2;
-            int btn1_y = WIN_H / 2 - BTN_H - BTN_GAP / 2;
-            int btn2_y = WIN_H / 2 + BTN_GAP / 2;
+            int total_btn_height = 3 * BTN_H + 2 * BTN_GAP;
+            int start_y = WIN_H / 2 - total_btn_height / 2;
+            int btn_x  = WIN_W / 2 - BTN_W / 2;
+            int btn1_y = start_y;
+            int btn2_y = start_y + BTN_H + BTN_GAP;
+            int btn3_y = start_y + 2 * (BTN_H + BTN_GAP);
 
             Rectangle btn1 = { (float)btn_x, (float)btn1_y,
                                 (float)BTN_W, (float)BTN_H };
             Rectangle btn2 = { (float)btn_x, (float)btn2_y,
                                 (float)BTN_W, (float)BTN_H };
+            Rectangle btn3 = { (float)btn_x, (float)btn3_y,
+                                (float)BTN_W, (float)BTN_H };
 
             if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                int chose = 0;
-                if (CheckCollisionPointRec((Vector2){ (float)mx, (float)my }, btn1)) {
-                    player_goes_first = 1;
-                    chose = 1;
-                } else if (CheckCollisionPointRec((Vector2){ (float)mx, (float)my }, btn2)) {
-                    player_goes_first = 0;
-                    chose = 1;
-                }
-                if (chose) {
+                Vector2 mp = { (float)mx, (float)my };
+                if (CheckCollisionPointRec(mp, btn1) ||
+                    CheckCollisionPointRec(mp, btn2)) {
+                    /* Offline mode: Player First or Computer First */
+                    player_goes_first = CheckCollisionPointRec(mp, btn1) ? 1 : 0;
+                    online_mode = 0;
                     strategy_reset();
                     board_init(&gs);
                     sides_determined = 0;
@@ -535,6 +731,9 @@ int gui_main(void)
                     last_to_r = last_to_c = 0;
                     ai_delay = player_goes_first ? 0 : 20;
                     screen = SCREEN_PLAYING;
+                } else if (CheckCollisionPointRec(mp, btn3)) {
+                    /* Online Battle → choose Computer/Player */
+                    screen = SCREEN_ONLINE_CHOOSE;
                 }
             }
 
@@ -545,14 +744,429 @@ int gui_main(void)
         }
 
         /* ============================================================
+         *  畫面：線上對戰模式選擇（電腦 / 玩家）
+         * ============================================================ */
+        if (screen == SCREEN_ONLINE_CHOOSE) {
+            if (IsKeyPressed(KEY_R)) {
+                screen = SCREEN_CHOOSE;
+            } else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                int total_btn_height = 2 * BTN_H + BTN_GAP;
+                int start_y = WIN_H / 2 - total_btn_height / 2;
+                int btn_x  = WIN_W / 2 - BTN_W / 2;
+                int btn1_y = start_y;
+                int btn2_y = start_y + BTN_H + BTN_GAP;
+
+                Rectangle btn1 = { (float)btn_x, (float)btn1_y,
+                                    (float)BTN_W, (float)BTN_H };
+                Rectangle btn2 = { (float)btn_x, (float)btn2_y,
+                                    (float)BTN_W, (float)BTN_H };
+                Vector2 mp = { (float)mx, (float)my };
+
+                if (CheckCollisionPointRec(mp, btn1)) {
+                    online_ai_mode = 1;  /* Computer Play */
+                    room_input[0] = '\0';
+                    conn_state = CONN_IDLE;
+                    conn_error[0] = '\0';
+                    screen = SCREEN_ONLINE_ROOM;
+                } else if (CheckCollisionPointRec(mp, btn2)) {
+                    online_ai_mode = 0;  /* Player Play */
+                    room_input[0] = '\0';
+                    conn_state = CONN_IDLE;
+                    conn_error[0] = '\0';
+                    screen = SCREEN_ONLINE_ROOM;
+                }
+            }
+
+            BeginDrawing();
+            draw_online_choose_screen(mx, my);
+            EndDrawing();
+            continue;
+        }
+
+        /* ============================================================
+         *  畫面：輸入房號（Online Battle）
+         * ============================================================ */
+        if (screen == SCREEN_ONLINE_ROOM) {
+            /* Handle text input for room ID */
+            if (conn_state == CONN_IDLE || conn_state == CONN_FAILED) {
+                /* Keyboard input for room ID */
+                int key = GetCharPressed();
+                while (key > 0) {
+                    if (key >= 32 && key < 127) {
+                        int len = (int)strlen(room_input);
+                        if (len < ROOM_ID_MAX) {
+                            room_input[len] = (char)key;
+                            room_input[len + 1] = '\0';
+                        }
+                    }
+                    key = GetCharPressed();
+                }
+                if (IsKeyPressed(KEY_BACKSPACE)) {
+                    int len = (int)strlen(room_input);
+                    if (len > 0) room_input[len - 1] = '\0';
+                }
+
+                /* Enter key = confirm */
+                if (IsKeyPressed(KEY_ENTER) && room_input[0]) {
+                    conn_state = CONN_CONNECTING;
+                    conn_frame = 0;
+                }
+
+                /* Button clicks */
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    int center_y = WIN_H / 2 - 60;
+                    int input_y = center_y + 20;
+                    int btn_w = 120, btn_h = 45, btn_gap = 40;
+                    int btn_y = input_y + INPUT_BOX_H + 30;
+                    int back_x = WIN_W / 2 - btn_gap / 2 - btn_w;
+                    int conf_x = WIN_W / 2 + btn_gap / 2;
+
+                    Rectangle btn_back = { (float)back_x, (float)btn_y,
+                                            (float)btn_w, (float)btn_h };
+                    Rectangle btn_conf = { (float)conf_x, (float)btn_y,
+                                            (float)btn_w, (float)btn_h };
+                    Vector2 mp = { (float)mx, (float)my };
+
+                    if (CheckCollisionPointRec(mp, btn_back)) {
+                        screen = SCREEN_CHOOSE;
+                    } else if (CheckCollisionPointRec(mp, btn_conf) &&
+                               room_input[0]) {
+                        conn_state = CONN_CONNECTING;
+                        conn_frame = 0;
+                    }
+                }
+            }
+
+            /* Handle connection attempt (delayed by 1 frame to show status) */
+            if (conn_state == CONN_CONNECTING) {
+                if (conn_frame == 0) {
+                    conn_frame = 1; /* first frame: just draw "Connecting..." */
+                } else {
+                    /* Actually connect */
+                    if (net_connect(NET_SERVER_IP, NET_SERVER_PORT) != 0) {
+                        conn_state = CONN_FAILED;
+                        snprintf(conn_error, sizeof(conn_error),
+                                 "Connection failed!");
+                    } else {
+                        char role[16] = "";
+                        if (net_join_room(room_input, role,
+                                          sizeof(role)) != 0) {
+                            conn_state = CONN_FAILED;
+                            snprintf(conn_error, sizeof(conn_error),
+                                     "Failed to join room %s", room_input);
+                            net_close();
+                        } else {
+                            /* Success! Determine role */
+                            if (strcmp(role, "first") == 0)
+                                strcpy(my_role_ab, "A");
+                            else
+                                strcpy(my_role_ab, "B");
+
+                            /* Initialize online game state */
+                            online_mode = 1;
+                            memset(&gs, 0, sizeof(gs));
+                            memset(&net_info, 0, sizeof(net_info));
+                            sides_determined = 0;
+                            player_side = SIDE_NONE;
+                            sel_r = sel_c = 0;
+                            last_from_r = last_from_c = 0;
+                            last_to_r = last_to_c = 0;
+                            waiting_for_update = 0;
+                            memset(prev_cells, 0, sizeof(prev_cells));
+                            screen = SCREEN_PLAYING;
+                        }
+                    }
+                }
+            }
+
+            BeginDrawing();
+            draw_online_room_screen(mx, my, room_input,
+                                    conn_state, conn_error);
+            EndDrawing();
+            continue;
+        }
+
+        /* ============================================================
          *  畫面：遊戲進行中
          * ============================================================ */
 
         /* R 鍵重新開始 → 回到選擇先手畫面 */
         if (IsKeyPressed(KEY_R)) {
+            if (online_mode) {
+                net_close();
+                online_mode = 0;
+            }
             screen = SCREEN_CHOOSE;
             continue;
         }
+
+        /* ==========================================================
+         *  Online mode game loop
+         * ========================================================== */
+        if (online_mode) {
+            /* Check connection */
+            if (!net_is_connected()) {
+                gs.game_over = 1;
+                gs.winner = SIDE_NONE;
+            }
+
+            /* Receive updates from server */
+            if (!gs.game_over) {
+                char recv_buf[8192];
+                int recv_result;
+                while ((recv_result = net_try_receive(
+                            recv_buf, sizeof(recv_buf))) > 0) {
+                    /* Save previous board for move detection */
+                    memcpy(prev_cells, gs.cells, sizeof(prev_cells));
+                    int old_total = net_info.total_moves;
+
+                    if (net_parse_update(recv_buf, &gs, &net_info)) {
+                        waiting_for_update = 0;
+                        if (online_ai_mode) ai_delay = 0; /* 2s delay */
+
+                        /* Determine player color from color_table */
+                        const char *my_color =
+                            (strcmp(my_role_ab, "A") == 0)
+                            ? net_info.color_a : net_info.color_b;
+
+                        if (strcmp(my_color, "Red") == 0) {
+                            player_side = SIDE_RED;
+                            sides_determined = 1;
+                        } else if (strcmp(my_color, "Black") == 0) {
+                            player_side = SIDE_BLACK;
+                            sides_determined = 1;
+                        } else {
+                            player_side = SIDE_NONE;
+                            sides_determined = 0;
+                        }
+
+                        /* Detect move for highlighting */
+                        if (net_info.total_moves != old_total &&
+                            old_total >= 0) {
+                            int fr = 0, fc = 0, tr = 0, tc = 0;
+                            for (int r = 0; r < BOARD_ROWS; r++) {
+                                for (int c = 0; c < BOARD_COLS; c++) {
+                                    if (prev_cells[r][c].state != STATE_EMPTY
+                                        && gs.cells[r][c].state == STATE_EMPTY) {
+                                        fr = r + 1; fc = c + 1;
+                                    }
+                                    if (memcmp(&prev_cells[r][c],
+                                               &gs.cells[r][c],
+                                               sizeof(Cell)) != 0
+                                        && gs.cells[r][c].state != STATE_EMPTY) {
+                                        tr = r + 1; tc = c + 1;
+                                    }
+                                }
+                            }
+                            if (fr == 0 && tr > 0) {
+                                fr = tr; fc = tc;
+                            }
+                            last_from_r = fr; last_from_c = fc;
+                            last_to_r = tr;   last_to_c = tc;
+                        }
+
+                        /* Game over is determined by the server.
+                         * We only detect it via state field or
+                         * connection loss — NOT by local piece counts,
+                         * since Covered pieces are invisible to us. */
+                        if (strcmp(net_info.state, "playing") != 0 &&
+                            strcmp(net_info.state, "waiting") != 0 &&
+                            net_info.state[0] != '\0') {
+                            gs.game_over = 1;
+                            /* Determine winner from server's winner field */
+                            if (strcmp(net_info.winner_role, "A") == 0) {
+                                if (strcmp(net_info.color_a, "Red") == 0)
+                                    gs.winner = SIDE_RED;
+                                else
+                                    gs.winner = SIDE_BLACK;
+                            } else if (strcmp(net_info.winner_role, "B") == 0) {
+                                if (strcmp(net_info.color_b, "Red") == 0)
+                                    gs.winner = SIDE_RED;
+                                else
+                                    gs.winner = SIDE_BLACK;
+                            } else {
+                                gs.winner = SIDE_NONE;  /* draw */
+                            }
+                        }
+                    }
+                }
+                if (recv_result < 0) {
+                    /* Connection lost */
+                    gs.game_over = 1;
+                    gs.winner = SIDE_NONE;
+                }
+            }
+
+            /* Determine if it's our turn */
+            int is_my_turn = 0;
+            if (!gs.game_over &&
+                strcmp(net_info.state, "playing") == 0 &&
+                strcmp(net_info.current_turn_role, my_role_ab) == 0 &&
+                !waiting_for_update) {
+                is_my_turn = 1;
+            }
+
+            /* --- Online AI auto-play --- */
+            if (online_ai_mode && is_my_turn) {
+                if (ai_delay > 0) {
+                    ai_delay--;
+                } else {
+                    /* Set current_turn for move generation */
+                    gs.current_turn = (player_side != SIDE_NONE)
+                                      ? player_side : SIDE_RED;
+
+                    Move legal[MAX_MOVES];
+                    int n_legal = board_generate_moves(&gs, legal);
+                    if (n_legal > 0) {
+                        Move chosen;
+                        /* Try strategy module, fall back to random */
+                        if (sides_determined) {
+                            strategy_reset();
+                        }
+                        if (!strategy_select_move(&gs, &chosen)) {
+                            chosen = legal[rand() % n_legal];
+                        }
+
+                        char action[64];
+                        if (chosen.type == MOVE_FLIP) {
+                            snprintf(action, sizeof(action), "%d %d\n",
+                                     chosen.from_r - 1, chosen.from_c - 1);
+                        } else {
+                            snprintf(action, sizeof(action),
+                                     "%d %d %d %d\n",
+                                     chosen.from_r - 1, chosen.from_c - 1,
+                                     chosen.to_r - 1, chosen.to_c - 1);
+                        }
+                        net_send_action(action);
+                        waiting_for_update = 1;
+                        ai_delay = 120; /* ~2 seconds at 60fps */
+                    }
+                }
+            }
+
+            /* --- Online Player input --- */
+            if (!online_ai_mode && is_my_turn &&
+                IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                int click_r, click_c;
+                if (pixel_to_cell(mx, my, &click_r, &click_c)) {
+                    const Cell *clicked = CELL(&gs, click_r, click_c);
+
+                    if (sel_r == 0) {
+                        /* Nothing selected */
+                        if (clicked->state == STATE_FACEDOWN) {
+                            /* Flip */
+                            char action[32];
+                            snprintf(action, sizeof(action), "%d %d\n",
+                                     click_r - 1, click_c - 1);
+                            net_send_action(action);
+                            waiting_for_update = 1;
+                            sel_r = sel_c = 0;
+                        } else if (clicked->state == STATE_FACEUP &&
+                                   sides_determined &&
+                                   clicked->side == player_side) {
+                            /* Select own piece */
+                            sel_r = click_r;
+                            sel_c = click_c;
+                        }
+                    } else {
+                        /* Piece is selected */
+                        if (click_r == sel_r && click_c == sel_c) {
+                            /* Deselect */
+                            sel_r = sel_c = 0;
+                        } else if (clicked->state == STATE_FACEDOWN) {
+                            /* Flip instead (deselect current) */
+                            char action[32];
+                            snprintf(action, sizeof(action), "%d %d\n",
+                                     click_r - 1, click_c - 1);
+                            net_send_action(action);
+                            waiting_for_update = 1;
+                            sel_r = sel_c = 0;
+                        } else if (clicked->state == STATE_EMPTY ||
+                                   (clicked->state == STATE_FACEUP &&
+                                    clicked->side != player_side)) {
+                            /* Move or capture: send from→to */
+                            char action[32];
+                            snprintf(action, sizeof(action),
+                                     "%d %d %d %d\n",
+                                     sel_r - 1, sel_c - 1,
+                                     click_r - 1, click_c - 1);
+                            net_send_action(action);
+                            waiting_for_update = 1;
+                            sel_r = sel_c = 0;
+                        } else if (clicked->state == STATE_FACEUP &&
+                                   clicked->side == player_side) {
+                            /* Re-select different own piece */
+                            sel_r = click_r;
+                            sel_c = click_c;
+                        } else {
+                            sel_r = sel_c = 0;
+                        }
+                    }
+                }
+            }
+
+            /* Right-click to deselect */
+            if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+                sel_r = sel_c = 0;
+            }
+
+            /* --- Draw online mode --- */
+            BeginDrawing();
+            draw_board(&gs, sel_r, sel_c,
+                       last_from_r, last_from_c, last_to_r, last_to_c);
+
+            /* Override status bar for online mode */
+            DrawRectangle(0, WIN_H - STATUS_HEIGHT, WIN_W,
+                          STATUS_HEIGHT, COL_STATUS_BG);
+
+            char status[128];
+            if (!net_is_connected() || gs.game_over) {
+                if (gs.winner == SIDE_RED)
+                    snprintf(status, sizeof(status),
+                             "Game Over - RED wins! (R to return)");
+                else if (gs.winner == SIDE_BLACK)
+                    snprintf(status, sizeof(status),
+                             "Game Over - BLACK wins! (R to return)");
+                else if (!net_is_connected())
+                    snprintf(status, sizeof(status),
+                             "Disconnected (R to return)");
+                else
+                    snprintf(status, sizeof(status),
+                             "Game Over - Draw! (R to return)");
+            } else if (strcmp(net_info.state, "waiting") == 0) {
+                snprintf(status, sizeof(status),
+                         "Waiting for opponent... (Room: %s, Role: %s)",
+                         room_input, my_role_ab);
+            } else if (waiting_for_update) {
+                snprintf(status, sizeof(status),
+                         "Waiting for server...");
+            } else {
+                const char *mode_str = online_ai_mode
+                    ? "[Computer]" : "[Player]";
+                const char *turn_str;
+                if (online_ai_mode)
+                    turn_str = is_my_turn ? "AI thinking..." : "Opponent's turn";
+                else
+                    turn_str = is_my_turn ? "Your turn" : "Opponent's turn";
+                const char *color_str = "";
+                if (player_side == SIDE_RED) color_str = " RED";
+                else if (player_side == SIDE_BLACK) color_str = " BLACK";
+                snprintf(status, sizeof(status),
+                         "%s %s%s | R:%d B:%d",
+                         mode_str, turn_str, color_str,
+                         gs.red_alive, gs.black_alive);
+            }
+
+            render_text_centered(status,
+                                 WIN_W / 2, WIN_H - STATUS_HEIGHT / 2,
+                                 FONT_SIZE_SMALL, COL_STATUS_TEXT);
+            EndDrawing();
+            continue;
+        }
+
+        /* ==========================================================
+         *  Offline mode (original logic below)
+         * ========================================================== */
 
         /* ==========================================================
          *  階段一：尚未決定顏色（首翻）
@@ -740,6 +1354,10 @@ int gui_main(void)
         EndDrawing();
     }
 
+    /* Cleanup */
+    if (online_mode && net_is_connected()) {
+        net_close();
+    }
     unload_font();
     CloseWindow();
     return 0;

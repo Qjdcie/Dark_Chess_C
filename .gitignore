@@ -1,6 +1,8 @@
 # Build output
 build/
 
+battle-sample/
+
 # Claude Code local project data
 .claude/
 
