@@ -18,7 +18,10 @@
 #include <stdarg.h>
 #include <sys/stat.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>  /* Sleep */
+#include <direct.h>   /* _mkdir */
+#else
 #include <unistd.h>   /* usleep */
 #endif
 

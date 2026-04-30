@@ -981,11 +981,11 @@ static float score_capture_safety(const GameState *gs, const Move *mv, Side my_s
                 int nr2 = adj_r + DR4[d2], nc2 = adj_c + DC4[d2];
                 if (!IN_BOUNDS(nr2, nc2)) continue;
                 if (nr2 == mv->to_r && nc2 == mv->to_c) continue; /* skip dest */
-                const Cell *far = CELL(&sim, nr2, nc2);
-                if (far->state != STATE_FACEUP || far->side == my_side ||
-                    far->side == SIDE_NONE) continue;
+                const Cell *far_cell = CELL(&sim, nr2, nc2);
+                if (far_cell->state != STATE_FACEUP || far_cell->side == my_side ||
+                    far_cell->side == SIDE_NONE) continue;
                 Cell temp2 = { my_side, attacker->rank, STATE_FACEUP };
-                if (board_can_capture(far, &temp2)) {
+                if (board_can_capture(far_cell, &temp2)) {
                     float pen = my_val * 0.35f;
                     if (pen > two_step_pen) two_step_pen = pen;
                 }
