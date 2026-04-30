@@ -1,13 +1,20 @@
+*.js
+auto_start/
+auto_start_run
+
 # Build output
 build/
 
 battle-sample/
+logs/
 
 # Claude Code local project data
 .claude/
+CLAUDE.md
 
 # Internal AI strategy notes
 docs/AI_STRATEGY_IMPLEMENTATION.md
+docs/DRAW_MODE_PLAN.md
 
 # Prerequisites
 *.d
