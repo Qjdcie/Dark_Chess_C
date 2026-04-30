@@ -29,4 +29,12 @@ int strategy_select_move(const GameState *gs, Move *out_move);
  */
 void strategy_reset(void);
 
+/*
+ * 函數名稱：strategy_is_draw_mode
+ * 功能：回傳 AI 當前是否處於平局模式（我方無法吃任何敵子）
+ * 輸入：無
+ * 輸出：int - 1 = draw_mode 中，0 = 正常模式
+ */
+int strategy_is_draw_mode(void);
+
 #endif /* STRATEGY_H */

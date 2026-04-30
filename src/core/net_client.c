@@ -414,6 +414,11 @@ int net_try_receive(char *buffer, int len)
     memcpy(buffer, last_update, msg_len);
     buffer[msg_len] = '\0';
 
+    /* Print last received JSON for debugging */
+    // const char *json_dbg = strchr(buffer, '{');
+    // if (json_dbg)
+    //     fprintf(stderr, "[NET] Last JSON:\n%s\n", json_dbg);
+
     /* Remove all processed data up to and including this message */
     int consumed = (int)(end + 1 - g_recv_accum);
     g_recv_len -= consumed;

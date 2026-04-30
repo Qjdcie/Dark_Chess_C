@@ -13,7 +13,11 @@
 
 CC       = gcc
 CFLAGS   = -O3 -Wall -Wextra
-LDFLAGS  = -lm -lws2_32
+ifeq ($(OS),Windows_NT)
+  LDFLAGS  = -lm -lws2_32
+else
+  LDFLAGS  = -lm
+endif
 BUILDDIR = build
 
 # Verbose mode: V=1 shows full commands, otherwise quiet
@@ -47,7 +51,7 @@ WIN_RAYLIB_LIBS   = -L$(RAYLIB_MINGW_DIR)/lib -lraylib \
 # ---- Source file groups ----
 
 CORE_SRC = src/core/board.c src/core/strategy.c src/core/net_client.c
-GUI_SRC  = src/gui/raylib_gui.c
+GUI_SRC  = src/gui/raylib_gui.c src/gui/cli_battle.c
 
 # ---- Targets ----
 
